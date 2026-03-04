@@ -18,6 +18,7 @@ namespace ThreadFileWriter
         //background task to initialize the file before starting the threads
         public async Task RunAsync()
         {
+            await _fileWriter.InitializeFile();
         }
     }
 }

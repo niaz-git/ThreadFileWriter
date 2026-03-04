@@ -38,7 +38,7 @@ namespace ThreadFileWriter
         }
         public async Task AppendFileContent(int threadId)
         {
-           
+          
         }
         /// <summary>
         /// Disposes the StreamWriter asynchronously to ensure all data is flushed to the file and resources are released properly.
@@ -49,9 +49,38 @@ namespace ThreadFileWriter
             await _writer.DisposeAsync();
         }
 
-        public Task InitializeFile()
+        /// <summary>
+        /// Initializes the file by writing a first line
+        /// </summary>
+        /// <returns></returns>
+        public async Task InitializeFile()
         {
-            throw new NotImplementedException();
+          await   WriteLineAsync(0, 0);
+        }
+
+
+        /// <summary>
+        /// Writes a line to the file with the format: "LineNumber, ThreadId, Timestamp"
+        /// </summary>
+        /// <param name="lineNumber"></param>
+        /// <param name="threadId"></param>
+        /// <returns></returns>
+
+        private async Task  WriteLineAsync(int lineNumber, int threadId)
+        {
+            try
+            {
+                string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+                string line = $"{lineNumber}, {threadId}, {timestamp}";
+
+                await _writer.WriteLineAsync(line);
+                //await _writer.FlushAsync();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to write to file: {ex.Message}");
+                throw;
+            }
         }
     }
 }
