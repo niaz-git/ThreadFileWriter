@@ -10,5 +10,7 @@ namespace ThreadFileWriter
     {
         Task InitializeFile();
         Task AppendFileContent(int threadId);
+        Task Complete();
+
     }
 }
