@@ -1,86 +1,137 @@
-﻿using System;
+﻿using Microsoft.Extensions.Logging.Abstractions;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Channels;
 using System.Threading.Tasks;
 
 namespace ThreadFileWriter
 {
     public class AsyncFileWriter : IFileWriter, IAsyncDisposable
     {
-        // File path location
-        private readonly string _filePath; 
-           
+        private readonly string _filePath;
         private readonly StreamWriter _writer;
+        private readonly Channel<LogEntry> _channel;
+        private readonly Task _processingTask;
 
+        private int _lineCounter = 0;
+        private bool _disposed;
 
         public AsyncFileWriter(string filePath)
         {
             _filePath = filePath ?? throw new ArgumentNullException(nameof(filePath));
-            try
-            {
-                var fileStream = new FileStream(
-                  _filePath,
-                  FileMode.Create,
-                  FileAccess.Write,
-                  FileShare.None,
-                  4096,
-                  useAsync: true);
-                _writer = new StreamWriter(fileStream, Encoding.UTF8);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Failed to initialize file writer: {ex.Message}");
-                throw;
-            }
 
+            var fileStream = new FileStream(
+                _filePath,
+                FileMode.Create,
+                FileAccess.Write,
+                FileShare.None,
+                4096,
+                useAsync: true);
+
+            _writer = new StreamWriter(fileStream, Encoding.UTF8);
+
+            _channel = Channel.CreateUnbounded<LogEntry>(
+                new UnboundedChannelOptions
+                {
+                    SingleReader = true,
+                    SingleWriter = false
+                });
+
+            _processingTask = ProcessQueueAsync();
         }
+
         public async Task AppendFileContent(int threadId)
         {
-          
-        }
-        /// <summary>
-        /// Disposes the StreamWriter asynchronously to ensure all data is flushed to the file and resources are released properly.
-        /// </summary>
-        /// <returns></returns>
-        public async ValueTask DisposeAsync()
-        {
-            await _writer.DisposeAsync();
-        }
+            ThrowIfDisposed();
 
-        /// <summary>
-        /// Initializes the file by writing a first line
-        /// </summary>
-        /// <returns></returns>
-        public async Task InitializeFile()
-        {
-          await   WriteLineAsync(0, 0);
+            int newLine = Interlocked.Increment(ref _lineCounter);
+
+            try
+            {
+                await _channel.Writer.WriteAsync(
+                    new LogEntry(newLine, threadId));
+            }
+            catch (ChannelClosedException)
+            {
+                throw new InvalidOperationException(
+                    "Cannot write to file. The writer has already been completed.");
+            }
         }
 
-
-        /// <summary>
-        /// Writes a line to the file with the format: "LineNumber, ThreadId, Timestamp"
-        /// </summary>
-        /// <param name="lineNumber"></param>
-        /// <param name="threadId"></param>
-        /// <returns></returns>
-
-        private async Task  WriteLineAsync(int lineNumber, int threadId)
+        private async Task ProcessQueueAsync()
         {
             try
             {
-                string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-                string line = $"{lineNumber}, {threadId}, {timestamp}";
-
-                await _writer.WriteLineAsync(line);
-                //await _writer.FlushAsync();
+                await foreach (var entry in _channel.Reader.ReadAllAsync())
+                {
+                    await WriteLineAsync(entry.LineNumber, entry.ThreadId);
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Failed to write to file: {ex.Message}");
+                // Ensure the channel is faulted so writers stop
+                _channel.Writer.TryComplete(ex);
                 throw;
             }
         }
+
+        private async Task WriteLineAsync(int lineNumber, int threadId)
+        {
+            string timestamp = DateTime.UtcNow.ToString("HH:mm:ss.fff");
+            string line = $"{lineNumber}, {threadId}, {timestamp}";
+
+            await _writer.WriteLineAsync(line);
+        }
+
+        public async Task InitializeFile()
+        {
+            ThrowIfDisposed();
+            await WriteLineAsync(0, 0);
+        }
+
+        public async Task Complete()
+        {
+            if (_disposed) return;
+
+            _channel.Writer.TryComplete();
+
+            try
+            {
+                await _processingTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // Let caller observe background exception
+                throw;
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed) return;
+            _disposed = true;
+
+            _channel.Writer.TryComplete();
+
+            try
+            {
+                await _processingTask.ConfigureAwait(false);
+            }
+            finally
+            {
+                await _writer.DisposeAsync();
+            }
+        }
+
+        private void ThrowIfDisposed()
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(AsyncFileWriter));
+        }
+
+        private record LogEntry(int LineNumber, int ThreadId);
     }
 }
